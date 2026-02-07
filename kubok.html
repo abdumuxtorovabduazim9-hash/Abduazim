@@ -1,0 +1,537 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hand Tracking Cup Control</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            background: linear-gradient(45deg, #1a1a2e, #16213e);
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-family: Arial, sans-serif;
+        }
+        
+        .container {
+            display: flex;
+            gap: 20px;
+            max-width: 1200px;
+            width: 100%;
+        }
+        
+        .video-container {
+            flex: 1;
+            position: relative;
+        }
+        
+        #webcam {
+            width: 100%;
+            border-radius: 15px;
+            border: 3px solid #00adb5;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+        }
+        
+        .canvas-container {
+            flex: 1;
+            position: relative;
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 15px;
+            overflow: hidden;
+        }
+        
+        #outputCanvas {
+            width: 100%;
+            height: 100%;
+        }
+        
+        .cup {
+            position: absolute;
+            width: 100px;
+            height: 150px;
+            transition: all 0.3s ease;
+            cursor: pointer;
+        }
+        
+        .controls {
+            margin-top: 30px;
+            text-align: center;
+        }
+        
+        button {
+            background: #00adb5;
+            color: white;
+            border: none;
+            padding: 15px 30px;
+            font-size: 18px;
+            border-radius: 50px;
+            cursor: pointer;
+            margin: 0 10px;
+            transition: all 0.3s;
+        }
+        
+        button:hover {
+            background: #0097a7;
+            transform: translateY(-3px);
+        }
+        
+        .instructions {
+            background: rgba(0, 173, 181, 0.1);
+            padding: 20px;
+            border-radius: 10px;
+            margin-top: 20px;
+            max-width: 800px;
+        }
+        
+        .gesture-info {
+            display: flex;
+            gap: 30px;
+            margin-top: 20px;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+        
+        .gesture-item {
+            text-align: center;
+            background: rgba(255, 255, 255, 0.1);
+            padding: 15px;
+            border-radius: 10px;
+            min-width: 150px;
+        }
+        
+        .gesture-icon {
+            font-size: 40px;
+            margin-bottom: 10px;
+        }
+        
+        .status {
+            font-size: 20px;
+            margin-top: 20px;
+            color: #00ff88;
+        }
+        
+        .warning {
+            color: #ffaa00;
+            background: rgba(255, 170, 0, 0.1);
+            padding: 15px;
+            border-radius: 10px;
+            margin: 20px;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <h1>🤚 Hand Gesture Controlled Cup</h1>
+    <p class="warning">⚠️ Kamera ruxsati kerak! Faqat HTTPS orqali ishlaydi (Chrome/Firefox)</p>
+    
+    <div class="container">
+        <div class="video-container">
+            <video id="webcam" autoplay playsinline></video>
+        </div>
+        <div class="canvas-container">
+            <canvas id="outputCanvas"></canvas>
+            <div id="cup" class="cup">🏆</div>
+        </div>
+    </div>
+    
+    <div class="controls">
+        <button id="startButton">🎥 Start Camera</button>
+        <button id="calibrateButton">🎯 Calibrate Hand</button>
+    </div>
+    
+    <div class="status" id="status">Status: Waiting for camera...</div>
+    
+    <div class="gesture-info">
+        <div class="gesture-item">
+            <div class="gesture-icon">✋</div>
+            <div>Open Hand = Move Cup</div>
+        </div>
+        <div class="gesture-item">
+            <div class="gesture-icon">👆</div>
+            <div>Point Finger = Select</div>
+        </div>
+        <div class="gesture-item">
+            <div class="gesture-icon">✊</div>
+            <div>Fist = Stop</div>
+        </div>
+        <div class="gesture-item">
+            <div class="gesture-icon">👌</div>
+            <div>OK Sign = Rotate</div>
+        </div>
+    </div>
+    
+    <div class="instructions">
+        <h3>📋 How to Control:</h3>
+        <p>1. "Start Camera" tugmasini bosing va kamera ruxsatini berin</p>
+        <p>2. O'ng qo'lingizni kameraga ko'rsating</p>
+        <p>3. Ochiq qo'l bilan kubokni harakatlantiring</p>
+        <p>4. Har xil imo-ishoralar bilan kubokni boshqaring</p>
+    </div>
+
+    <!-- TensorFlow.js and MediaPipe libraries -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/hand-pose-detection"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands"></script>
+    
+    <script>
+        // DOM Elements
+        const webcamElement = document.getElementById('webcam');
+        const outputCanvasElement = document.getElementById('outputCanvas');
+        const outputCtx = outputCanvasElement.getContext('2d');
+        const cupElement = document.getElementById('cup');
+        const startButton = document.getElementById('startButton');
+        const calibrateButton = document.getElementById('calibrateButton');
+        const statusElement = document.getElementById('status');
+        
+        // Cup properties
+        const cup = {
+            x: 300,
+            y: 200,
+            width: 100,
+            height: 150,
+            rotation: 0,
+            scale: 1,
+            color: '#FFD700',
+            isDragging: false
+        };
+        
+        // Hand tracking variables
+        let detector;
+        let isCameraOn = false;
+        let handPosition = { x: 0, y: 0 };
+        let previousHandPosition = { x: 0, y: 0 };
+        
+        // Initialize hand detector
+        async function initializeHandDetector() {
+            try {
+                statusElement.textContent = 'Loading hand detection model...';
+                
+                const model = handPoseDetection.SupportedModels.MediaPipeHands;
+                const detectorConfig = {
+                    runtime: 'mediapipe',
+                    solutionPath: 'https://cdn.jsdelivr.net/npm/@mediapipe/hands',
+                    modelType: 'full'
+                };
+                
+                detector = await handPoseDetection.createDetector(model, detectorConfig);
+                statusElement.textContent = 'Hand detection model loaded! Click "Start Camera"';
+                
+            } catch (error) {
+                statusElement.textContent = `Error loading model: ${error.message}`;
+                statusElement.style.color = '#ff5555';
+            }
+        }
+        
+        // Start webcam
+        async function startWebcam() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: {
+                        width: { ideal: 640 },
+                        height: { ideal: 480 },
+                        facingMode: 'user'
+                    },
+                    audio: false
+                });
+                
+                webcamElement.srcObject = stream;
+                isCameraOn = true;
+                statusElement.textContent = 'Camera started! Show your hand to the camera';
+                statusElement.style.color = '#00ff88';
+                
+                // Start detection loop
+                detectHands();
+                
+            } catch (error) {
+                statusElement.textContent = `Camera error: ${error.message}`;
+                statusElement.style.color = '#ff5555';
+            }
+        }
+        
+        // Detect hands and update cup position
+        async function detectHands() {
+            if (!isCameraOn || !detector) return;
+            
+            // Get video properties
+            const videoWidth = webcamElement.videoWidth;
+            const videoHeight = webcamElement.videoHeight;
+            
+            // Set canvas dimensions to match video
+            webcamElement.width = videoWidth;
+            webcamElement.height = videoHeight;
+            outputCanvasElement.width = outputCanvasElement.parentElement.clientWidth;
+            outputCanvasElement.height = outputCanvasElement.parentElement.clientHeight;
+            
+            // Detect hands
+            const hands = await detector.estimateHands(webcamElement, {
+                flipHorizontal: false
+            });
+            
+            // Clear canvas
+            outputCtx.clearRect(0, 0, outputCanvasElement.width, outputCanvasElement.height);
+            
+            if (hands.length > 0) {
+                const hand = hands[0];
+                
+                // Get hand landmarks
+                const landmarks = hand.keypoints;
+                
+                // Draw hand landmarks
+                drawHandLandmarks(landmarks);
+                
+                // Get palm center (landmark 0 is wrist, 9 is middle finger base)
+                const palmX = (landmarks[0].x + landmarks[9].x) / 2;
+                const palmY = (landmarks[0].y + landmarks[9].y) / 2;
+                
+                // Convert to canvas coordinates
+                handPosition.x = palmX * outputCanvasElement.width / videoWidth;
+                handPosition.y = palmY * outputCanvasElement.height / videoHeight;
+                
+                // Detect gestures
+                detectGestures(landmarks);
+                
+                // Update cup position based on hand movement
+                updateCupPosition();
+                
+                // Draw hand position
+                outputCtx.fillStyle = 'rgba(0, 255, 136, 0.5)';
+                outputCtx.beginPath();
+                outputCtx.arc(handPosition.x, handPosition.y, 20, 0, Math.PI * 2);
+                outputCtx.fill();
+                
+                // Draw line from hand to cup
+                outputCtx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+                outputCtx.lineWidth = 2;
+                outputCtx.beginPath();
+                outputCtx.moveTo(handPosition.x, handPosition.y);
+                outputCtx.lineTo(cup.x, cup.y);
+                outputCtx.stroke();
+                
+                statusElement.textContent = `Hand detected! Position: ${Math.round(handPosition.x)}, ${Math.round(handPosition.y)}`;
+            } else {
+                statusElement.textContent = 'Show your hand to the camera';
+            }
+            
+            // Draw cup
+            drawCup();
+            
+            // Continue detection
+            requestAnimationFrame(detectHands);
+        }
+        
+        // Draw hand landmarks
+        function drawHandLandmarks(landmarks) {
+            // Draw connections
+            const connections = [
+                [0, 1], [1, 2], [2, 3], [3, 4], // Thumb
+                [0, 5], [5, 6], [6, 7], [7, 8], // Index
+                [0, 9], [9, 10], [10, 11], [11, 12], // Middle
+                [0, 13], [13, 14], [14, 15], [15, 16], // Ring
+                [0, 17], [17, 18], [18, 19], [19, 20] // Pinky
+            ];
+            
+            outputCtx.strokeStyle = '#00ff88';
+            outputCtx.lineWidth = 2;
+            
+            connections.forEach(connection => {
+                const [start, end] = connection;
+                const startPoint = landmarks[start];
+                const endPoint = landmarks[end];
+                
+                if (startPoint && endPoint) {
+                    const startX = startPoint.x * outputCanvasElement.width / webcamElement.videoWidth;
+                    const startY = startPoint.y * outputCanvasElement.height / webcamElement.videoHeight;
+                    const endX = endPoint.x * outputCanvasElement.width / webcamElement.videoWidth;
+                    const endY = endPoint.y * outputCanvasElement.height / webcamElement.videoHeight;
+                    
+                    outputCtx.beginPath();
+                    outputCtx.moveTo(startX, startY);
+                    outputCtx.lineTo(endX, endY);
+                    outputCtx.stroke();
+                }
+            });
+            
+            // Draw points
+            landmarks.forEach(landmark => {
+                const x = landmark.x * outputCanvasElement.width / webcamElement.videoWidth;
+                const y = landmark.y * outputCanvasElement.height / webcamElement.videoHeight;
+                
+                outputCtx.fillStyle = landmark.name === 'index_finger_tip' ? '#ff5555' : '#00adb5';
+                outputCtx.beginPath();
+                outputCtx.arc(x, y, 5, 0, Math.PI * 2);
+                outputCtx.fill();
+            });
+        }
+        
+        // Detect hand gestures
+        function detectGestures(landmarks) {
+            // Get finger tips
+            const thumbTip = landmarks[4];
+            const indexTip = landmarks[8];
+            const middleTip = landmarks[12];
+            const ringTip = landmarks[16];
+            const pinkyTip = landmarks[20];
+            
+            // Get finger bases
+            const indexBase = landmarks[5];
+            const middleBase = landmarks[9];
+            const ringBase = landmarks[13];
+            const pinkyBase = landmarks[17];
+            
+            // Calculate distances for gesture recognition
+            
+            // 1. Fist detection (all fingers closed)
+            const fistThreshold = 0.1;
+            const isFist = 
+                Math.abs(indexTip.y - indexBase.y) < fistThreshold &&
+                Math.abs(middleTip.y - middleBase.y) < fistThreshold &&
+                Math.abs(ringTip.y - ringBase.y) < fistThreshold &&
+                Math.abs(pinkyTip.y - pinkyBase.y) < fistThreshold;
+            
+            // 2. Pointing detection (only index finger extended)
+            const isPointing = 
+                Math.abs(indexTip.y - indexBase.y) > fistThreshold * 2 &&
+                Math.abs(middleTip.y - middleBase.y) < fistThreshold &&
+                Math.abs(ringTip.y - ringBase.y) < fistThreshold &&
+                Math.abs(pinkyTip.y - pinkyBase.y) < fistThreshold;
+            
+            // 3. Open hand detection (all fingers extended)
+            const isOpenHand = 
+                Math.abs(indexTip.y - indexBase.y) > fistThreshold &&
+                Math.abs(middleTip.y - middleBase.y) > fistThreshold &&
+                Math.abs(ringTip.y - ringBase.y) > fistThreshold &&
+                Math.abs(pinkyTip.y - pinkyBase.y) > fistThreshold;
+            
+            // 4. OK sign (thumb and index finger touching)
+            const thumbIndexDistance = Math.sqrt(
+                Math.pow(thumbTip.x - indexTip.x, 2) + 
+                Math.pow(thumbTip.y - indexTip.y, 2)
+            );
+            const isOKSign = thumbIndexDistance < fistThreshold * 0.5;
+            
+            // Apply gestures
+            if (isFist) {
+                cup.isDragging = false;
+                cupElement.style.transform = `translate(${cup.x - 50}px, ${cup.y - 75}px) scale(${cup.scale})`;
+                cupElement.innerHTML = "✊<br>STOP";
+                cupElement.style.fontSize = "24px";
+            } else if (isPointing) {
+                cup.isDragging = true;
+                cupElement.innerHTML = "👆<br>SELECT";
+                cupElement.style.fontSize = "24px";
+            } else if (isOpenHand) {
+                cup.isDragging = true;
+                cupElement.innerHTML = "🏆";
+                cupElement.style.fontSize = "48px";
+            } else if (isOKSign) {
+                cup.rotation += 0.1;
+                cupElement.innerHTML = "👌<br>ROTATE";
+                cupElement.style.fontSize = "24px";
+            }
+        }
+        
+        // Update cup position based on hand movement
+        function updateCupPosition() {
+            if (cup.isDragging) {
+                // Smooth movement
+                const speed = 0.3;
+                cup.x += (handPosition.x - cup.x) * speed;
+                cup.y += (handPosition.y - cup.y) * speed;
+                
+                // Keep within bounds
+                cup.x = Math.max(50, Math.min(outputCanvasElement.width - 50, cup.x));
+                cup.y = Math.max(75, Math.min(outputCanvasElement.height - 75, cup.y));
+            }
+            
+            // Update cup element position
+            cupElement.style.left = `${cup.x - 50}px`;
+            cupElement.style.top = `${cup.y - 75}px`;
+            cupElement.style.transform = `rotate(${cup.rotation}rad) scale(${cup.scale})`;
+        }
+        
+        // Draw cup on canvas
+        function drawCup() {
+            // Draw a simple cup representation on canvas
+            outputCtx.save();
+            outputCtx.translate(cup.x, cup.y);
+            outputCtx.rotate(cup.rotation);
+            
+            // Cup body
+            outputCtx.fillStyle = cup.color;
+            outputCtx.strokeStyle = '#FFA500';
+            outputCtx.lineWidth = 3;
+            
+            // Main body
+            outputCtx.beginPath();
+            outputCtx.roundRect(-40, -60, 80, 120, 15);
+            outputCtx.fill();
+            outputCtx.stroke();
+            
+            // Rim
+            outputCtx.fillStyle = '#FFE55C';
+            outputCtx.beginPath();
+            outputCtx.roundRect(-35, -70, 70, 15, 8);
+            outputCtx.fill();
+            outputCtx.stroke();
+            
+            // Handle
+            outputCtx.beginPath();
+            outputCtx.arc(50, 0, 15, 0, Math.PI * 2);
+            outputCtx.fill();
+            outputCtx.stroke();
+            
+            outputCtx.restore();
+        }
+        
+        // Calibrate hand position
+        function calibrateHand() {
+            cup.x = handPosition.x;
+            cup.y = handPosition.y;
+            statusElement.textContent = 'Cup position calibrated to hand!';
+        }
+        
+        // Event listeners
+        startButton.addEventListener('click', startWebcam);
+        calibrateButton.addEventListener('click', calibrateHand);
+        
+        // Touch events for cup on mobile
+        cupElement.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            cup.isDragging = true;
+        });
+        
+        cupElement.addEventListener('touchend', (e) => {
+            e.preventDefault();
+            cup.isDragging = false;
+        });
+        
+        // Initialize
+        initializeHandDetector();
+        
+        // Add CSS for roundRect if not supported
+        if (!CanvasRenderingContext2D.prototype.roundRect) {
+            CanvasRenderingContext2D.prototype.roundRect = function(x, y, w, h, r) {
+                if (w < 2 * r) r = w / 2;
+                if (h < 2 * r) r = h / 2;
+                this.beginPath();
+                this.moveTo(x + r, y);
+                this.arcTo(x + w, y, x + w, y + h, r);
+                this.arcTo(x + w, y + h, x, y + h, r);
+                this.arcTo(x, y + h, x, y, r);
+                this.arcTo(x, y, x + w, y, r);
+                this.closePath();
+                return this;
+            };
+        }
+    </script>
+</body>
+</html>
